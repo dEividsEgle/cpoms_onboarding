@@ -1,0 +1,4 @@
+*.DS_Store*
+*.env*
+/edgedriver_macarm64*
+.idea*
