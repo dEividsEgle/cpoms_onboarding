@@ -17,7 +17,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-debugging = True
+debugging = False
 
 log_stream = io.StringIO()
 log_format = "%(message)s"
@@ -106,13 +106,11 @@ def process_user(driver):
         )
 
         if not user_links:
-            logging.info("No user links found.")
             return False
 
         for link in user_links:
             user_name = link.text.strip()
             if user_name == TARGET_NAME:
-                logging.info(f"User '{TARGET_NAME}' found. Navigating to user page.")
                 link.click()
                 return True
 
@@ -136,7 +134,6 @@ def set_email_and_group(driver):
         group_dropdown_trigger = wait_for_element(driver, By.CLASS_NAME, "select2-choice")
         if group_dropdown_trigger:
             ActionChains(driver).move_to_element(group_dropdown_trigger).click().perform()
-            logging.info("User group dropdown clicked.")
         else:
             logging.info("User group dropdown trigger not found.")
             return False
@@ -144,7 +141,6 @@ def set_email_and_group(driver):
         WebDriverWait(driver, 10).until(
             EC.visibility_of_element_located((By.CLASS_NAME, "select2-results"))
         )
-        logging.info("Dropdown is now visible.")
 
         all_options = driver.find_elements(By.CLASS_NAME, "select2-result-label")
         if not all_options:
@@ -192,7 +188,6 @@ def create_user(driver):
                 return False
 
         except TimeoutException:
-            logging.info("User creation was successful.")
             return True
 
     except Exception as e:
