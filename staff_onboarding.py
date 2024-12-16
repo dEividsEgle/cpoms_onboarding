@@ -17,7 +17,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-debugging = False
+debugging = True
 
 log_stream = io.StringIO()
 log_format = "%(message)s"
@@ -31,8 +31,8 @@ ACCOUNT_EMAIL = os.getenv("ACCOUNT_EMAIL")
 ACCOUNT_PASSWORD = os.getenv("ACCOUNT_PASSWORD")
 MFA_SECRET = os.getenv("MFA_SECRET")
 USER_PAGE = os.getenv("USER_PAGE")
-TARGET_NAME = os.getenv("TARGET_NAME")
-EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+TARGET_NAMES = os.getenv("TARGET_NAMES").split(",")
+EMAIL_ADDRESSES = os.getenv("EMAIL_ADDRESSES").split(",")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
@@ -99,7 +99,7 @@ def login_to_account(driver):
 def navigate_to_user_page(driver):
     driver.get(USER_PAGE)
 
-def process_user(driver):
+def process_user(driver, target_name):
     try:
         user_links = driver.find_elements(
             By.XPATH, '//a[contains(@class, "dormant-user")]'
@@ -110,23 +110,26 @@ def process_user(driver):
 
         for link in user_links:
             user_name = link.text.strip()
-            if user_name == TARGET_NAME:
+            if user_name == target_name:
                 link.click()
                 return True
 
-        logging.info(f"User '{TARGET_NAME}' not found.")
+        logging.info(f"User '{target_name}' not found.")
         return False
 
     except Exception as e:
         logging.info(f"Error processing user: {e}")
 
-def set_email_and_group(driver):
+def set_email_and_group(driver, email_address):
     try:
         email_input = wait_for_element(driver, By.ID, "user_email")
         if email_input:
-            email_input.clear()
-            email_input.send_keys(EMAIL_ADDRESS)
-            logging.info(f"Entered email: {EMAIL_ADDRESS}")
+            if email_input.get_dom_attribute("value") == email_address:
+                logging.info(f"Email '{email_address}' is already set.")
+            else:
+                email_input.clear()
+                email_input.send_keys(email_address)
+                logging.info(f"Entered email: {email_address}")
         else:
             logging.info("Email input not found.")
             return False
@@ -164,6 +167,8 @@ def set_email_and_group(driver):
 
     except Exception as e:
         logging.error(f"Error in set_email_and_group: {e}")
+        if "Email address has already been taken" in str(e):
+            logging.info(f"Email '{email_address}' is already associated with another user.")
         return False
 
 def create_user(driver):
@@ -181,7 +186,8 @@ def create_user(driver):
             error_message = error_element.text
 
             if "Email address has already been taken" in error_message:
-                logging.info(f"Error: {error_message}")
+                logging.info(f"Error: {error_message}. Returning to user page.")
+                navigate_to_user_page(driver)
                 return False
             else:
                 logging.info(f"Unexpected error during user creation: {error_message}.")
@@ -207,52 +213,62 @@ def send_message(subject, receiver):
         smtp.login(sender, SENDER_PASSWORD)
         smtp.send_message(msg)
 
+    log_stream.truncate(0)
+    log_stream.seek(0)
+
 def main():
     service = Service(str(driver_path))
-
     driver = webdriver.Edge(service=service, options=edge_options)
 
     try:
         login_to_account(driver)
         navigate_to_user_page(driver)
-        user_found = process_user(driver)
 
-        if user_found:
-            logging.info(f"Processing user {TARGET_NAME}.")
+        user_email_pairs = zip(TARGET_NAMES, EMAIL_ADDRESSES)
 
-            email_and_group_updated = set_email_and_group(driver)
-            if email_and_group_updated:
-                logging.info(f"Email and user group updated successfully for {TARGET_NAME}.")
+        for target_name, email_address in user_email_pairs:
+            target_name = target_name.strip()
+            email_address = email_address.strip()
+            logging.info(f"Processing user {target_name} with email {email_address}...")
 
-                user_created = create_user(driver)
-                if user_created:
-                    logging.info(f"User {TARGET_NAME} created successfully.")
-                    send_message(
-                        subject=f"Success: CPOMS User {TARGET_NAME} Account Has Been Created.",
-                        receiver=RECEIVER_EMAIL
-                    )
+            user_found = process_user(driver, target_name)
+            if user_found:
+                logging.info(f"User {target_name} found, attempting to set email and group.")
+
+                email_and_group_updated = set_email_and_group(driver, email_address)
+                if email_and_group_updated:
+                    logging.info(f"Email and user group updated successfully for {target_name}.")
+
+                    user_created = create_user(driver)
+                    if user_created:
+                        logging.info(f"User {target_name} created successfully.")
+                        send_message(
+                            subject=f"Success: CPOMS User {target_name} Account Has Been Created.",
+                            receiver=RECEIVER_EMAIL
+                        )
+                    else:
+                        logging.info(f"Failed to create user {target_name}.")
+                        send_message(
+                            subject=f"Failure: Unable To Create CPOMS User {target_name}.",
+                            receiver=RECEIVER_EMAIL
+                        )
                 else:
-                    logging.info(f"Failed to create user {TARGET_NAME}.")
+                    logging.info(f"Failed to update email or group for {target_name}.")
                     send_message(
-                        subject=f"Failure: Unable To Create CPOMS User {TARGET_NAME}.",
+                        subject=f"Failure: Unable To Update Email or Group for CPOMS User {target_name}.",
                         receiver=RECEIVER_EMAIL
                     )
             else:
-                logging.info(f"Failed to update email or group for {TARGET_NAME}.")
+                logging.info(f"User {target_name} not found.")
                 send_message(
-                    subject=f"Failure: Unable To Update Email or Group for CPOMS User {TARGET_NAME}.",
+                    subject=f"Failure: Unable To Process CPOMS User {target_name}.",
                     receiver=RECEIVER_EMAIL
                 )
-        else:
-            logging.info(f"User {TARGET_NAME} not found.")
-            send_message(
-                subject=f"Failure: Unable To Process CPOMS User {TARGET_NAME}.",
-                receiver=RECEIVER_EMAIL
-            )
+
     except WebDriverException as e:
         logging.info(f"General WebDriver error: {e}")
         send_message(
-            subject=f"General Error: Failed To Process CPOMS User {TARGET_NAME}.",
+            subject=f"General Error: Failed To Process CPOMS User.",
             receiver=RECEIVER_EMAIL
         )
     finally:
