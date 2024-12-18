@@ -2,3 +2,5 @@
 *.env*
 /edgedriver_macarm64*
 .idea*
+*processed_uids*
+/logs/*

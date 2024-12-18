@@ -1,13 +1,16 @@
-from idlelib.debugger_r import debugging
 import os
 import logging
 import io
 import smtplib
 import pyotp
+import re
+import imaplib
+import email
 from pathlib import Path
 from email.message import EmailMessage
-
 from dotenv import load_dotenv
+from datetime import datetime
+from idlelib.debugger_r import debugging
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver import ActionChains
@@ -17,12 +20,10 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-debugging = True
+debugging = False
 
 log_stream = io.StringIO()
 log_format = "%(message)s"
-
-logging.basicConfig(stream=log_stream, level=logging.INFO, format=log_format)
 
 load_dotenv()
 
@@ -31,11 +32,16 @@ ACCOUNT_EMAIL = os.getenv("ACCOUNT_EMAIL")
 ACCOUNT_PASSWORD = os.getenv("ACCOUNT_PASSWORD")
 MFA_SECRET = os.getenv("MFA_SECRET")
 USER_PAGE = os.getenv("USER_PAGE")
-TARGET_NAMES = os.getenv("TARGET_NAMES").split(",")
-EMAIL_ADDRESSES = os.getenv("EMAIL_ADDRESSES").split(",")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
+PROCESSED_UIDS_FILE = os.getenv("PROCESSED_UIDS_FILE")
+EMAIL_SERVER = os.getenv("EMAIL_SERVER")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT"))
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT")
+LOG_DIR = os.getenv("LOG_DIR")
 
 script_directory = Path(__file__).resolve().parent
 driver_path = script_directory.joinpath("edgedriver_macarm64", "msedgedriver")
@@ -45,6 +51,19 @@ if debugging:
     edge_options.add_experimental_option("detach", True)
 else:
     edge_options.add_argument("--headless")
+
+os.makedirs(LOG_DIR, exist_ok=True)
+log_file = os.path.join(LOG_DIR, f"user_processing_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(log_file, mode="w"),
+        logging.StreamHandler(log_stream),
+    ],
+)
 
 def wait_for_element(driver, by, element_identifier, timeout=10):
     try:
@@ -59,28 +78,102 @@ def generate_totp(secret):
     totp = pyotp.TOTP(secret)
     return totp.now()
 
+def get_processed_uids():
+    if not os.path.exists(PROCESSED_UIDS_FILE):
+        return set()
+    with open(PROCESSED_UIDS_FILE, "r") as file:
+        return set(line.strip() for line in file)
+
+def save_processed_uids(uid):
+    with open(PROCESSED_UIDS_FILE, "a") as file:
+        file.write(f"{uid}\n")
+
+def fetch_latest_email():
+    try:
+        mail = imaplib.IMAP4_SSL(EMAIL_SERVER, EMAIL_PORT)
+        mail.login(EMAIL_USER, EMAIL_PASSWORD)
+        mail.select("inbox")
+
+        status, messages = mail.search(None, f'(SUBJECT "{EMAIL_SUBJECT}")')
+        if status != "OK":
+            logging.info("No emails found with the specified subject.")
+            return ""
+
+        email_ids = messages[0].split()
+        if not email_ids:
+            logging.info("No matching emails found.")
+            return ""
+
+        processed_uids = get_processed_uids()
+
+        for email_id in reversed(email_ids):
+            status, response = mail.fetch(email_id, "(UID)")
+            uid = response[0].split()[-1].decode()
+
+            if uid in processed_uids:
+                logging.info(f"Email with UID {uid} already processed. Skipping.")
+                continue
+
+
+            status, msg_data = mail.fetch(email_id, "(RFC822)")
+            if status != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+                logging.info(f"Failed to fetch email with UID {uid}.")
+                continue
+
+            raw_email = msg_data[0][1]
+            msg = email.message_from_bytes(raw_email)
+            save_processed_uids(uid)
+            mail.logout()
+
+            if msg.is_multipart():
+                for part in msg.walk():
+                    if part.get_content_type() == "text/plain":
+                        return part.get_payload(decode=True).decode()
+            else:
+                return msg.get_payload(decode=True).decode()
+
+    except Exception as e:
+        logging.info(f"Error fetching email: {e}")
+        return ""
+
+def parse_users_from_email():
+    users = []
+    email_content = fetch_latest_email()
+    if not email_content:
+        logging.info("No email content to parse.")
+        return users
+
+    user_pattern = re.compile(
+        r"(?P<first_name>\w+),\s*(?P<last_name>[\w'-]+),.*?,.*?,(?P<email>[\w.-]+@[\w.-]+\.\w+)"
+    )
+    matches = user_pattern.finditer(email_content)
+    for match in matches:
+        full_name = f"{match.group('first_name')} {match.group('last_name')}"
+        user_email = match.group('email')
+        users.append({
+            "name": full_name,
+            "email": user_email,
+        })
+    return users
+
 def login_to_account(driver):
     driver.get(LOGIN_PAGE)
 
     username_input = wait_for_element(driver, By.ID, "Username")
     if username_input:
         username_input.send_keys(ACCOUNT_EMAIL)
-
     next_button = wait_for_element(
         driver, By.XPATH, '//button[contains(@class, "btn-primary") and contains(., "Next")]'
     )
-
     if next_button:
         next_button.click()
 
     password_input = wait_for_element(driver, By.ID, "Password")
     if password_input:
         password_input.send_keys(ACCOUNT_PASSWORD)
-
     login_button = wait_for_element(
         driver, By.XPATH, '//span[contains(@class, "ladda-label") and text()="Log In"]/ancestor::button'
     )
-
     if login_button:
         login_button.click()
 
@@ -89,7 +182,6 @@ def login_to_account(driver):
         mfa_code = generate_totp(MFA_SECRET)
         print(f"Generated MFA Code: {mfa_code}")
         mfa_input.send_keys(mfa_code)
-
     authenticate_button = wait_for_element(
         driver, By.XPATH, '//button[@name="auth" and @type="submit" and contains(@class, "btn-primary")]'
     )
@@ -123,6 +215,7 @@ def process_user(driver, target_name):
 def set_email_and_group(driver, email_address):
     try:
         email_input = wait_for_element(driver, By.ID, "user_email")
+
         if email_input:
             if email_input.get_dom_attribute("value") == email_address:
                 logging.info(f"Email '{email_address}' is already set.")
@@ -178,10 +271,9 @@ def create_user(driver):
             submit_button.click()
 
         try:
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((By.ID, "errorExplanation"))
             )
-
             error_element = driver.find_element(By.ID, "errorExplanation")
             error_message = error_element.text
 
@@ -194,27 +286,45 @@ def create_user(driver):
                 return False
 
         except TimeoutException:
-            return True
+            try:
+                success_notice = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "p.notice"))
+                )
+                if "User was successfully created." in success_notice.text:
+                    logging.info("User creation confirmed: 'User was successfully created.' notice found.")
+                    return True
+            except TimeoutException:
+                logging.info("User creation failed: Neither error nor success notice was found.")
+                return False
 
     except Exception as e:
         logging.error(f"Error during user creation: {e}")
         return False
 
-def send_message(subject, receiver):
-    sender = SENDER_EMAIL
-
+def send_summary_email(successful_users, failed_users):
     msg = EmailMessage()
-    msg['From'] = sender
-    msg['To'] = receiver
-    msg['Subject'] = subject
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = RECEIVER_EMAIL
+    msg['Subject'] = "Staff Onboarding - CPOMS User Activation Summary"
     msg.set_content(log_stream.getvalue())
+    content = "Task Summary:\n\n"
 
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-        smtp.login(sender, SENDER_PASSWORD)
-        smtp.send_message(msg)
+    if successful_users:
+        content += "Successfully Processed Users:\n" + "\n".join(successful_users) + "\n\n"
+    else:
+        content += "No users were successfully processed.\n\n"
+    if failed_users:
+        content += "Failed Users:\n" + "\n".join(failed_users) + "\n"
+    else:
+        content += "No failures occurred.\n"
 
-    log_stream.truncate(0)
-    log_stream.seek(0)
+    msg.set_content(content)
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(SENDER_EMAIL, SENDER_PASSWORD)
+            smtp.send_message(msg)
+    except Exception as e:
+        logging.error(f"Failed to send summary email: {e}")
 
 def main():
     service = Service(str(driver_path))
@@ -224,53 +334,55 @@ def main():
         login_to_account(driver)
         navigate_to_user_page(driver)
 
-        user_email_pairs = zip(TARGET_NAMES, EMAIL_ADDRESSES)
+        users = parse_users_from_email()
+        if not users:
+            logging.info("No users found in the email.")
+            return
 
-        for target_name, email_address in user_email_pairs:
-            target_name = target_name.strip()
-            email_address = email_address.strip()
+        successful_users = []
+        failed_users = []
+
+        for user in users:
+            target_name = user["name"]
+            email_address = user["email"]
+
             logging.info(f"Processing user {target_name} with email {email_address}...")
 
-            user_found = process_user(driver, target_name)
-            if user_found:
-                logging.info(f"User {target_name} found, attempting to set email and group.")
+            try:
+                user_found = process_user(driver, target_name)
+                if user_found:
+                    logging.info(f"User {target_name} found, attempting to set email and group.")
+                    email_and_group_updated = set_email_and_group(driver, email_address)
 
-                email_and_group_updated = set_email_and_group(driver, email_address)
-                if email_and_group_updated:
-                    logging.info(f"Email and user group updated successfully for {target_name}.")
+                    if email_and_group_updated:
+                        logging.info(f"Email and user group updated successfully for {target_name}.")
+                        user_created = create_user(driver)
 
-                    user_created = create_user(driver)
-                    if user_created:
-                        logging.info(f"User {target_name} created successfully.")
-                        send_message(
-                            subject=f"Success: CPOMS User {target_name} Account Has Been Created.",
-                            receiver=RECEIVER_EMAIL
-                        )
+                        if user_created:
+                            logging.info(f"User {target_name} created successfully.")
+                            successful_users.append(f"{target_name} ({email_address})")
+                        else:
+                            logging.info(f"Failed to create user {target_name}.")
+                            failed_users.append(f"{target_name} ({email_address}): User creation failed.")
                     else:
-                        logging.info(f"Failed to create user {target_name}.")
-                        send_message(
-                            subject=f"Failure: Unable To Create CPOMS User {target_name}.",
-                            receiver=RECEIVER_EMAIL
-                        )
+                        logging.info(f"Failed to update email or group for {target_name}.")
+                        failed_users.append(f"{target_name} ({email_address}): Email/group update failed.")
                 else:
-                    logging.info(f"Failed to update email or group for {target_name}.")
-                    send_message(
-                        subject=f"Failure: Unable To Update Email or Group for CPOMS User {target_name}.",
-                        receiver=RECEIVER_EMAIL
-                    )
-            else:
-                logging.info(f"User {target_name} not found.")
-                send_message(
-                    subject=f"Failure: Unable To Process CPOMS User {target_name}.",
-                    receiver=RECEIVER_EMAIL
-                )
+                    logging.info(f"User {target_name} not found.")
+                    failed_users.append(f"{target_name} ({email_address}): User not found.")
 
-    except WebDriverException as e:
+                    logging.info(f"Navigating back to user page for next user processing.")
+                    navigate_to_user_page(driver)
+
+            except Exception as e:
+                logging.error(f"Error processing user {target_name}: {e}")
+                failed_users.append(f"{target_name} ({email_address}): Unexpected error occurred.")
+
+        send_summary_email(successful_users, failed_users)
+
+    except WebDriverException as e:  # This 'except' block should align with 'try'
         logging.info(f"General WebDriver error: {e}")
-        send_message(
-            subject=f"General Error: Failed To Process CPOMS User.",
-            receiver=RECEIVER_EMAIL
-        )
+        send_summary_email([], [f"General WebDriver error: {e}"])
     finally:
         if debugging:
             print(log_stream.getvalue())
