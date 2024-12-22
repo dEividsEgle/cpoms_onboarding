@@ -380,7 +380,7 @@ def main():
 
         send_summary_email(successful_users, failed_users)
 
-    except WebDriverException as e:  # This 'except' block should align with 'try'
+    except WebDriverException as e:
         logging.info(f"General WebDriver error: {e}")
         send_summary_email([], [f"General WebDriver error: {e}"])
     finally:
