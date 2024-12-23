@@ -355,6 +355,12 @@ def send_summary_email(successful_users, failed_users, general_errors, start_tim
 def main():
     start_time = datetime.now()
     logging.info(f"{script_name} started at: {start_time.strftime('%H:%M:%S')}")
+
+    users = parse_users_from_email()
+    if not users:
+        logging.info("No users found in the email to process.")
+        return
+
     service = Service(str(driver_path))
     driver = webdriver.Edge(service=service, options=edge_options)
 
@@ -364,11 +370,6 @@ def main():
     try:
         login_to_account(driver)
         navigate_to_user_page(driver)
-
-        users = parse_users_from_email()
-        if not users:
-            logging.info("No users found in the email to process.")
-            return
 
         for user in users:
             target_name = user["name"]
