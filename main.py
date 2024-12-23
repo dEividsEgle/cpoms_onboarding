@@ -196,6 +196,7 @@ def login_to_account(driver):
     )
     if authenticate_button:
         authenticate_button.click()
+        logging.info(f"Successfully authenticated: {LOGIN_PAGE}")
 
 def navigate_to_user_page(driver):
     driver.get(USER_PAGE)
