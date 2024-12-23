@@ -6,11 +6,12 @@ import pyotp
 import re
 import imaplib
 import email
+import platform
+import socket
 from pathlib import Path
 from email.message import EmailMessage
 from dotenv import load_dotenv
 from datetime import datetime
-from idlelib.debugger_r import debugging
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver import ActionChains
@@ -76,7 +77,7 @@ def wait_for_element(driver, by, element_identifier, timeout=10):
         element_present = EC.presence_of_element_located((by, element_identifier))
         WebDriverWait(driver, timeout).until(element_present)
     except TimeoutException:
-        logging.info(f"Time out waiting for {element_identifier}")
+        logging.error(f"Time out waiting for {element_identifier}")
         return None
     return driver.find_element(by, element_identifier)
 
@@ -122,10 +123,9 @@ def fetch_latest_email():
                 logging.info(f"Email with UID {uid} already processed. Skipping.")
                 continue
 
-
             status, msg_data = mail.fetch(email_id, "(RFC822)")
             if status != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
-                logging.info(f"Failed to fetch email with UID {uid}.")
+                logging.error(f"Failed to fetch email with UID {uid}.")
                 continue
 
             raw_email = msg_data[0][1]
@@ -142,7 +142,7 @@ def fetch_latest_email():
                 return msg.get_payload(decode=True).decode()
 
     except Exception as e:
-        logging.info(f"Error fetching email: {e}")
+        logging.error(f"Error fetching email: {e}")
         return ""
 
 def parse_users_from_email():
@@ -189,7 +189,7 @@ def login_to_account(driver):
     mfa_input = wait_for_element(driver, By.ID, "code")
     if mfa_input:
         mfa_code = generate_totp(MFA_SECRET)
-        print(f"Generated MFA Code: {mfa_code}")
+        logging.info("Successfully generated MFA code.")
         mfa_input.send_keys(mfa_code)
     authenticate_button = wait_for_element(
         driver, By.XPATH, '//button[@name="auth" and @type="submit" and contains(@class, "btn-primary")]'
@@ -203,9 +203,7 @@ def navigate_to_user_page(driver):
 
 def process_user(driver, target_name):
     try:
-        user_links = driver.find_elements(
-            By.XPATH, '//a[contains(@class, "dormant-user")]'
-        )
+        user_links = driver.find_elements(By.XPATH, '//a[contains(@class, "dormant-user")]')
 
         if not user_links:
             return False
@@ -215,12 +213,10 @@ def process_user(driver, target_name):
             if user_name == target_name:
                 link.click()
                 return True
-
-        logging.info(f"User '{target_name}' not found.")
         return False
 
     except Exception as e:
-        logging.info(f"Error processing user: {e}")
+        logging.error(f"Error processing user: {e}")
 
 def set_email_and_group(driver, email_address):
     try:
@@ -241,7 +237,7 @@ def set_email_and_group(driver, email_address):
         if group_dropdown_trigger:
             ActionChains(driver).move_to_element(group_dropdown_trigger).click().perform()
         else:
-            logging.info("User group dropdown trigger not found.")
+            logging.error("User group dropdown trigger not found.")
             return False
 
         WebDriverWait(driver, 10).until(
@@ -250,7 +246,7 @@ def set_email_and_group(driver, email_address):
 
         all_options = driver.find_elements(By.CLASS_NAME, "select2-result-label")
         if not all_options:
-            logging.info("No dropdown options found.")
+            logging.error("No dropdown options found.")
             return False
 
         all_staff_option = None
@@ -263,7 +259,7 @@ def set_email_and_group(driver, email_address):
             all_staff_option.click()
             logging.info("User group set to 'All Staff'.")
         else:
-            logging.info("'All Staff' option not found in dropdown.")
+            logging.error("'All Staff' option not found in dropdown.")
             return False
 
         return True
@@ -304,14 +300,14 @@ def create_user(driver):
                     logging.info("User creation confirmed: 'User was successfully created.' notice found.")
                     return True
             except TimeoutException:
-                logging.info("User creation failed: Neither error nor success notice was found.")
+                logging.error("User creation failed: Neither error nor success notice was found.")
                 return False
 
     except Exception as e:
         logging.error(f"Error during user creation: {e}")
         return False
 
-def send_summary_email(successful_users, failed_users):
+def send_summary_email(successful_users, failed_users, general_errors, start_time, end_time):
     msg = EmailMessage()
     msg['From'] = SENDER_EMAIL
     msg['To'] = RECEIVER_EMAIL
@@ -328,25 +324,42 @@ def send_summary_email(successful_users, failed_users):
     )
 
     if successful_users:
-        content += "Successfully Processed Users:\n" + "\n".join(successful_users) + "\n\n"
-    else:
-        content += "No users were successfully processed.\n\n"
+        content += "Successfully Processed Users:\n"
+        for user in successful_users:
+            content += f"{user['name']} - {user['email']}\n"
+            content += f"User {user['name']} added to group 'All Staff'\n"
+            content += f"Account invitation link sent to: {user['email']}.\n\n"
     if failed_users:
-        content += "Failed Users:\n" + "\n".join(failed_users) + "\n"
+        content += "Failed Users:\n"
+        for user in failed_users:
+            content += f"{user['name']} - {user['email']}\n"
     else:
-        content += "No failures occurred.\n"
+        content += "No failures occurred.\n\n"
 
-    msg.set_content(content)
+    if general_errors:
+        content += "General Errors:\n"
+        for error in general_errors:
+            content += f"{error}\n\n"
+
+    content += f"\n\nLog files can be found at: {absolute_log_path}\n"
+
     try:
+        msg.set_content(content)
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(SENDER_EMAIL, SENDER_PASSWORD)
             smtp.send_message(msg)
+        logging.info(f"Summary email sent successfully to {RECEIVER_EMAIL}")
     except Exception as e:
         logging.error(f"Failed to send summary email: {e}")
 
 def main():
+    start_time = datetime.now()
+    logging.info(f"{script_name} started at: {start_time.strftime('%H:%M:%S')}")
     service = Service(str(driver_path))
     driver = webdriver.Edge(service=service, options=edge_options)
+
+    successful_users = []
+    failed_users = []
 
     try:
         login_to_account(driver)
@@ -354,41 +367,42 @@ def main():
 
         users = parse_users_from_email()
         if not users:
-            logging.info("No users found in the email.")
+            logging.info("No users found in the email to process.")
             return
-
-        successful_users = []
-        failed_users = []
 
         for user in users:
             target_name = user["name"]
             email_address = user["email"]
-
-            logging.info(f"Processing user {target_name} with email {email_address}...")
+            logging.info(f"Processing user: {target_name} with email {email_address}...")
 
             try:
                 user_found = process_user(driver, target_name)
                 if user_found:
                     logging.info(f"User {target_name} found, attempting to set email and group.")
                     email_and_group_updated = set_email_and_group(driver, email_address)
-
                     if email_and_group_updated:
                         logging.info(f"Email and user group updated successfully for {target_name}.")
                         user_created = create_user(driver)
-
                         if user_created:
-                            logging.info(f"User {target_name} created successfully.")
-                            successful_users.append(f"{target_name} ({email_address})")
+                            logging.info(f"Successfully processed user: {target_name}")
+                            successful_users.append(
+                                {"name": target_name, "email": email_address}
+                            )
                         else:
                             logging.info(f"Failed to create user {target_name}.")
-                            failed_users.append(f"{target_name} ({email_address}): User creation failed.")
+                            failed_users.append(
+                                {"name": target_name, "email": email_address, "reason": "User creation failed."}
+                            )
                     else:
                         logging.info(f"Failed to update email or group for {target_name}.")
-                        failed_users.append(f"{target_name} ({email_address}): Email/group update failed.")
+                        failed_users.append(
+                            {"name": target_name, "email": email_address, "reason": "Email/group update failed."}
+                        )
                 else:
-                    logging.info(f"User {target_name} not found.")
-                    failed_users.append(f"{target_name} ({email_address}): User not found.")
-
+                    logging.info(f"User '{target_name}' not found.")
+                    failed_users.append(
+                        {"name": target_name, "email": email_address, "reason": "User not found."}
+                    )
                     logging.info(f"Navigating back to user page for next user processing.")
                     navigate_to_user_page(driver)
 
@@ -396,12 +410,23 @@ def main():
                 logging.error(f"Error processing user {target_name}: {e}")
                 failed_users.append(f"{target_name} ({email_address}): Unexpected error occurred.")
 
-        send_summary_email(successful_users, failed_users)
-
     except WebDriverException as e:
-        logging.info(f"General WebDriver error: {e}")
-        send_summary_email([], [f"General WebDriver error: {e}"])
+        logging.error(f"General WebDriver error: {e}")
+        end_time = datetime.now()
+        send_summary_email(
+            start_time = start_time,
+            successful_users = [],
+            failed_users = [],
+            general_errors = [f"General WebDriver error: {e}"],
+            end_time=end_time
+        )
     finally:
+        end_time = datetime.now()
+        logging.info(f"{script_name} finished at: {end_time.strftime('%H:%M:%S')}")
+        if successful_users or failed_users:
+            send_summary_email(successful_users, failed_users, [], start_time, end_time)
+        else:
+            logging.info("No action taken.")
         if debugging:
             print(log_stream.getvalue())
         else:
