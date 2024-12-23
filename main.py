@@ -316,8 +316,16 @@ def send_summary_email(successful_users, failed_users):
     msg['From'] = SENDER_EMAIL
     msg['To'] = RECEIVER_EMAIL
     msg['Subject'] = "Staff Onboarding - CPOMS User Activation Summary"
-    msg.set_content(log_stream.getvalue())
-    content = "Task Summary:\n\n"
+
+    content = (
+        "This is a summary email of an automated script for CPOMS staff user activation.\n\n"
+        f"Environment:\n"
+        f"Operating System: {platform.system()} {platform.release()}\n"
+        f"Hostname: {socket.gethostname()}\n"
+        f"Script Name: {script_name}\n"
+        f"Start Time: {start_time.strftime('%H:%M:%S')}\n"
+        f"End Time: {end_time.strftime('%H:%M:%S')}\n\n"
+    )
 
     if successful_users:
         content += "Successfully Processed Users:\n" + "\n".join(successful_users) + "\n\n"
