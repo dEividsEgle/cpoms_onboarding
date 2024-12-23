@@ -133,6 +133,7 @@ def fetch_latest_email():
             save_processed_uids(uid)
             mail.logout()
 
+            logging.info(f"Processing email with UID {uid}.")
             if msg.is_multipart():
                 for part in msg.walk():
                     if part.get_content_type() == "text/plain":
