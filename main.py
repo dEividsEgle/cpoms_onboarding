@@ -44,6 +44,7 @@ EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT")
 LOG_DIR = os.getenv("LOG_DIR")
 
 script_directory = Path(__file__).resolve().parent
+script_name = Path(__file__).name
 driver_path = script_directory.joinpath("edgedriver_macarm64", "msedgedriver")
 
 edge_options = Options()
