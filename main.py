@@ -99,6 +99,8 @@ def fetch_latest_email():
         mail = imaplib.IMAP4_SSL(EMAIL_SERVER, EMAIL_PORT)
         mail.login(EMAIL_USER, EMAIL_PASSWORD)
         mail.select("inbox")
+        logging.info(f"Successfully Authenticated: Checking for mail in {EMAIL_USER} inbox.")
+        logging.info(f"Email Subject: {EMAIL_SUBJECT}")
 
         status, messages = mail.search(None, f'(SUBJECT "{EMAIL_SUBJECT}")')
         if status != "OK":
