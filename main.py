@@ -163,6 +163,7 @@ def parse_users_from_email():
             "name": full_name,
             "email": user_email,
         })
+        logging.info(f"Parsed users: {full_name} ({user_email})")
     return users
 
 def login_to_account(driver):
