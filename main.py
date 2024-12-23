@@ -53,8 +53,8 @@ if debugging:
 else:
     edge_options.add_argument("--headless")
 
-os.makedirs(LOG_DIR, exist_ok=True)
-log_file = os.path.join(LOG_DIR, f"user_processing_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+log_format = "%(asctime)s - %(levelname)s - %(message)s"
+log_time_format = "%H:%M:%S"
 
 logging.basicConfig(
     level=logging.INFO,
