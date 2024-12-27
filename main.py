@@ -1,23 +1,24 @@
-import os
-import logging
-import io
-import smtplib
-import pyotp
-import re
-import imaplib
 import email
+import io
+import logging
+import os
 import platform
+import re
 import socket
-from pathlib import Path
-from email.message import EmailMessage
-from dotenv import load_dotenv
 from datetime import datetime
+from email.message import EmailMessage
+from pathlib import Path
+
+from dotenv import load_dotenv
+import pyotp
+import imaplib
+import smtplib
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver import ActionChains
+from selenium.webdriver.common.by import By
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.edge.service import Service
-from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -198,6 +199,7 @@ def login_to_account(driver):
     if authenticate_button:
         authenticate_button.click()
         logging.info(f"Successfully authenticated: {LOGIN_PAGE}")
+        logging.info(f"Account: {ACCOUNT_EMAIL}")
 
 def navigate_to_user_page(driver):
     driver.get(USER_PAGE)
